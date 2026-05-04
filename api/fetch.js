@@ -31,7 +31,7 @@ export default async function handler(req, res) {
       // Try YTStream
       try {
         const r = await fetch(
-          `https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id=${encodeURIComponent(url)}`,
+          `https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id=${encodeURIComponent(url)}&cgeo=US`,
           { headers: { 'x-rapidapi-key': KEY, 'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com' } }
         );
         const d = await r.json();
@@ -98,7 +98,7 @@ export default async function handler(req, res) {
     // Endpoint: GET /api?url=VIDEO_URL&hd=1
     if (isTikTok) {
       const r = await fetch(
-        `https://tiktok-video-no-watermark2.p.rapidapi.com/api?url=${encodeURIComponent(url)}&hd=1`,
+        `https://tiktok-video-no-watermark2.p.rapidapi.com/?url=${encodeURIComponent(url)}&hd=1`,
         { headers: { 'x-rapidapi-key': KEY, 'x-rapidapi-host': 'tiktok-video-no-watermark2.p.rapidapi.com' } }
       );
       const d = await r.json();
@@ -116,19 +116,6 @@ export default async function handler(req, res) {
 
       return res.status(200).json({ title: v.title || 'TikTok Video', thumbnail: v.cover || '', uploader: v.author?.nickname || '', medias: links });
     }
-
-    // ── INSTAGRAM / TWITTER / OTHER ──────────────────────────
-    // all-video-downloader1 — POST /all
-    const body = new URLSearchParams({ url });
-    const r = await fetch('https://all-video-downloader1.p.rapidapi.com/all', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'x-rapidapi-key': KEY, 'x-rapidapi-host': 'all-video-downloader1.p.rapidapi.com' },
-      body: body.toString()
-    });
-    const d = await r.json();
-    console.log('General:', JSON.stringify(d).slice(0, 400));
-    if (r.ok && !d.error && (d.medias || d.links || d.url)) return res.status(200).json(d);
-    return res.status(502).json({ error: d?.message || d?.error || 'Could not fetch video. Status: ' + r.status });
 
     // ── FACEBOOK ─────────────────────────────────────────────
     if (isFacebook) {
@@ -149,6 +136,32 @@ export default async function handler(req, res) {
       } catch(e) { errors.push(e.message); }
       return res.status(502).json({ error: 'Facebook failed: ' + errors.join(' | ') });
     }
+
+    // ── INSTAGRAM / TWITTER / OTHER ──────────────────────────
+    // Using tiktok-video-no-watermark2 for Instagram too — it supports both
+    // For Twitter/X use the same API
+    const isInsta = u.includes('instagram.com');
+    const isTwitter = u.includes('twitter.com') || u.includes('x.com') || u.includes('t.co');
+
+    if (isInsta || isTwitter) {
+      const r = await fetch(
+        `https://tiktok-video-no-watermark2.p.rapidapi.com/?url=${encodeURIComponent(url)}&hd=1`,
+        { headers: { 'x-rapidapi-key': KEY, 'x-rapidapi-host': 'tiktok-video-no-watermark2.p.rapidapi.com' } }
+      );
+      const d = await r.json();
+      console.log('Insta/Twitter:', JSON.stringify(d).slice(0, 400));
+      if (r.ok && d && d.code === 0 && d.data) {
+        const v = d.data;
+        const links = [];
+        if (v.hdplay) links.push({ label: 'HD Video',   quality: 'HD',  ext: 'mp4', url: v.hdplay });
+        if (v.play)   links.push({ label: 'SD Video',   quality: 'SD',  ext: 'mp4', url: v.play });
+        if (v.music)  links.push({ label: 'MP3 Audio',  quality: 'MP3', ext: 'mp3', url: v.music });
+        if (links.length > 0) return res.status(200).json({ title: v.title || 'Video', thumbnail: v.cover || '', uploader: v.author?.nickname || '', medias: links });
+      }
+      return res.status(502).json({ error: d?.msg || 'Could not fetch video.' });
+    }
+
+    return res.status(400).json({ error: 'Unsupported platform.' });
 
   } catch(e) {
     console.error('Error:', e.message);
