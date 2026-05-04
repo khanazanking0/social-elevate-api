@@ -1,5 +1,5 @@
-// Social Elevate – Vercel API v3
-// Confirmed working endpoints per platform
+// Social Elevate – Vercel API v4
+// Stable, long-running APIs with confirmed endpoints
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -17,130 +17,138 @@ export default async function handler(req, res) {
   const u = url.toLowerCase();
   const isYouTube  = u.includes('youtube.com') || u.includes('youtu.be');
   const isFacebook = u.includes('facebook.com') || u.includes('fb.watch') || u.includes('fb.com');
+  const isTikTok   = u.includes('tiktok.com') || u.includes('vm.tiktok');
 
   try {
 
     // ── YOUTUBE ──────────────────────────────────────────────
-    // Confirmed endpoint: GET /download?video=VIDEO_ID
-    // host: youtube-search-download3.p.rapidapi.com
-    // Subscribe: rapidapi.com/boztek-technology-boztek-technology-default/api/youtube-search-download3
+    // YTStream by ytjar — stable since 2022
+    // Subscribe: https://rapidapi.com/ytjar/api/ytstream-download-youtube-videos
+    // Endpoint: GET /stream?url=VIDEO_URL&format=mp4&quality=720
     if (isYouTube) {
-      // Extract video ID from URL
-      let videoId = '';
+      const errors = [];
+
+      // Try YTStream
       try {
-        const parsed = new URL(url);
-        if (parsed.hostname.includes('youtu.be')) {
-          videoId = parsed.pathname.replace('/', '');
-        } else {
-          videoId = parsed.searchParams.get('v') || '';
+        const r = await fetch(
+          `https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id=${encodeURIComponent(url)}`,
+          { headers: { 'x-rapidapi-key': KEY, 'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com' } }
+        );
+        const d = await r.json();
+        console.log('YTStream:', JSON.stringify(d).slice(0, 400));
+
+        if (r.ok && d && !d.error && (d.formats || d.url)) {
+          const links = [];
+          const formats = d.formats || [];
+          formats.forEach(f => {
+            if (f.url && f.mimeType && f.mimeType.includes('video')) {
+              links.push({ label: f.qualityLabel || f.quality || 'MP4', quality: guessQuality(f.qualityLabel, f.url), ext: 'mp4', url: f.url });
+            }
+          });
+          formats.forEach(f => {
+            if (f.url && f.mimeType && f.mimeType.includes('audio')) {
+              links.push({ label: 'MP3 Audio', quality: 'MP3', ext: 'mp3', url: f.url });
+            }
+          });
+          if (d.url && links.length === 0) links.push({ label: 'Download', quality: 'HD', ext: 'mp4', url: d.url });
+          if (links.length > 0) {
+            return res.status(200).json({ title: d.title || 'YouTube Video', thumbnail: d.thumbnail || `https://img.youtube.com/vi/${d.id}/hqdefault.jpg`, uploader: d.channelTitle || '', medias: links });
+          }
         }
-        // Handle shorts
-        if (!videoId && parsed.pathname.includes('/shorts/')) {
-          videoId = parsed.pathname.split('/shorts/')[1].split('/')[0];
+        errors.push('YTStream: ' + (d?.msg || d?.error || r.status));
+      } catch(e) { errors.push('YTStream: ' + e.message); }
+
+      // Try Youtube Search and Download (h0p3rwe) as fallback
+      // Subscribe: https://rapidapi.com/h0p3rwe/api/youtube-search-and-download
+      try {
+        // Extract video ID
+        let videoId = '';
+        try {
+          const p = new URL(url);
+          videoId = p.hostname.includes('youtu.be') ? p.pathname.slice(1) : (p.searchParams.get('v') || '');
+          if (!videoId && p.pathname.includes('/shorts/')) videoId = p.pathname.split('/shorts/')[1].split('/')[0];
+        } catch {}
+
+        if (videoId) {
+          const r = await fetch(
+            `https://youtube-search-and-download.p.rapidapi.com/video?id=${videoId}`,
+            { headers: { 'x-rapidapi-key': KEY, 'x-rapidapi-host': 'youtube-search-and-download.p.rapidapi.com' } }
+          );
+          const d = await r.json();
+          console.log('YT fallback:', JSON.stringify(d).slice(0, 400));
+
+          if (r.ok && d && !d.error) {
+            const links = [];
+            const formats = d.streamingData?.formats || d.streamingData?.adaptiveFormats || d.formats || [];
+            formats.forEach(f => {
+              if (f.url) links.push({ label: f.qualityLabel || f.quality || 'Download', quality: guessQuality(f.qualityLabel || f.quality, f.url), ext: f.mimeType?.includes('audio') ? 'mp3' : 'mp4', url: f.url });
+            });
+            if (links.length > 0) return res.status(200).json({ title: d.videoDetails?.title || 'YouTube Video', thumbnail: d.videoDetails?.thumbnail?.thumbnails?.[0]?.url || '', uploader: d.videoDetails?.author || '', medias: links });
+          }
+          errors.push('YT fallback: ' + (d?.message || r.status));
         }
-      } catch {}
+      } catch(e) { errors.push('YT fallback: ' + e.message); }
 
-      if (!videoId) return res.status(400).json({ error: 'Could not extract YouTube video ID from URL' });
-
-      const r = await fetch(`https://youtube-search-download3.p.rapidapi.com/download?video=${videoId}`, {
-        headers: {
-          'x-rapidapi-key':  KEY,
-          'x-rapidapi-host': 'youtube-search-download3.p.rapidapi.com'
-        }
-      });
-      const d = await r.json();
-      console.log('YouTube:', JSON.stringify(d).slice(0, 400));
-
-      if (!r.ok || d.error) {
-        return res.status(502).json({ error: 'YouTube failed: ' + (d?.message || d?.error || r.status) + '. Make sure you subscribed to: rapidapi.com/boztek-technology-boztek-technology-default/api/youtube-search-download3' });
-      }
-
-      // Response: { mp4: [{url, quality}], mp3: [{url}], title, thumbnail }
-      const links = [];
-      (d.mp4 || []).forEach(v => {
-        if (v.url) links.push({ label: v.quality || 'MP4', quality: guessQuality(v.quality, v.url), ext: 'mp4', url: v.url });
-      });
-      (d.mp3 || []).forEach(a => {
-        if (a.url) links.push({ label: 'MP3 Audio', quality: 'MP3', ext: 'mp3', url: a.url });
-      });
-      // Fallback if different shape
-      if (links.length === 0) {
-        const formats = d.formats || d.links || d.videos || d.items || [];
-        formats.forEach(f => {
-          const furl = f.url || f.link || f.download_url;
-          if (furl) links.push({ label: f.quality || f.format || 'Download', quality: guessQuality(f.quality, furl), ext: guessExt(furl, f.quality), url: furl });
-        });
-      }
-      if (links.length === 0 && d.url) links.push({ label: 'Download', quality: 'HD', ext: 'mp4', url: d.url });
-
-      if (links.length === 0) return res.status(502).json({ error: 'YouTube: no download links in response. Raw: ' + JSON.stringify(d).slice(0, 200) });
-
-      return res.status(200).json({ title: d.title || 'YouTube Video', thumbnail: d.thumbnail || d.thumb || '', uploader: d.channel || d.author || '', medias: links });
+      return res.status(502).json({ error: 'YouTube failed: ' + errors.join(' | ') + '. Subscribe to: rapidapi.com/ytjar/api/ytstream-download-youtube-videos' });
     }
+
+    // ── TIKTOK ───────────────────────────────────────────────
+    // tiktok-video-no-watermark2 by yi005 — very stable, running for years
+    // Subscribe: https://rapidapi.com/yi005/api/tiktok-video-no-watermark2
+    // Endpoint: GET /api?url=VIDEO_URL&hd=1
+    if (isTikTok) {
+      const r = await fetch(
+        `https://tiktok-video-no-watermark2.p.rapidapi.com/api?url=${encodeURIComponent(url)}&hd=1`,
+        { headers: { 'x-rapidapi-key': KEY, 'x-rapidapi-host': 'tiktok-video-no-watermark2.p.rapidapi.com' } }
+      );
+      const d = await r.json();
+      console.log('TikTok:', JSON.stringify(d).slice(0, 400));
+
+      if (!r.ok || d.code !== 0) {
+        return res.status(502).json({ error: 'TikTok failed: ' + (d?.msg || r.status) + '. Subscribe to: rapidapi.com/yi005/api/tiktok-video-no-watermark2' });
+      }
+
+      const v = d.data;
+      const links = [];
+      if (v.hdplay) links.push({ label: 'No Watermark HD', quality: 'HD',  ext: 'mp4', url: v.hdplay });
+      if (v.play)   links.push({ label: 'No Watermark SD', quality: 'SD',  ext: 'mp4', url: v.play });
+      if (v.music)  links.push({ label: 'MP3 Audio',       quality: 'MP3', ext: 'mp3', url: v.music });
+
+      return res.status(200).json({ title: v.title || 'TikTok Video', thumbnail: v.cover || '', uploader: v.author?.nickname || '', medias: links });
+    }
+
+    // ── INSTAGRAM / TWITTER / OTHER ──────────────────────────
+    // all-video-downloader1 — POST /all
+    const body = new URLSearchParams({ url });
+    const r = await fetch('https://all-video-downloader1.p.rapidapi.com/all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'x-rapidapi-key': KEY, 'x-rapidapi-host': 'all-video-downloader1.p.rapidapi.com' },
+      body: body.toString()
+    });
+    const d = await r.json();
+    console.log('General:', JSON.stringify(d).slice(0, 400));
+    if (r.ok && !d.error && (d.medias || d.links || d.url)) return res.status(200).json(d);
+    return res.status(502).json({ error: d?.message || d?.error || 'Could not fetch video. Status: ' + r.status });
 
     // ── FACEBOOK ─────────────────────────────────────────────
     if (isFacebook) {
       const errors = [];
-
-      // Free public API (no key)
       try {
         const r = await fetch('https://fdown.isuru.eu.org/info', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url })
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url })
         });
         const d = await r.json();
-        console.log('FB1:', JSON.stringify(d).slice(0, 300));
-        if (r.ok && d && (d.hd_url || d.sd_url || d.download_url)) {
+        console.log('FB:', JSON.stringify(d).slice(0, 300));
+        if (r.ok && d && (d.hd_url || d.sd_url)) {
           const links = [];
           if (d.hd_url) links.push({ label: 'HD Video', quality: 'HD', ext: 'mp4', url: d.hd_url });
           if (d.sd_url) links.push({ label: 'SD Video', quality: 'SD', ext: 'mp4', url: d.sd_url });
-          if (d.download_url && links.length === 0) links.push({ label: 'Download', quality: 'HD', ext: 'mp4', url: d.download_url });
           if (links.length > 0) return res.status(200).json({ title: d.title || 'Facebook Video', thumbnail: d.thumbnail || '', uploader: '', medias: links });
         }
-        errors.push('FB1: ' + (d?.detail || d?.message || r.status));
-      } catch(e) { errors.push('FB1: ' + e.message); }
-
-      // RapidAPI Facebook fallback
-      try {
-        const r = await fetch(`https://facebook17.p.rapidapi.com/?url=${encodeURIComponent(url)}`, {
-          headers: { 'x-rapidapi-key': KEY, 'x-rapidapi-host': 'facebook17.p.rapidapi.com' }
-        });
-        const d = await r.json();
-        console.log('FB2:', JSON.stringify(d).slice(0, 300));
-        if (r.ok && d && (d.hd || d.sd || d.url)) {
-          const links = [];
-          if (d.hd) links.push({ label: 'HD Video', quality: 'HD', ext: 'mp4', url: d.hd });
-          if (d.sd) links.push({ label: 'SD Video', quality: 'SD', ext: 'mp4', url: d.sd });
-          if (d.url && links.length === 0) links.push({ label: 'Download', quality: 'HD', ext: 'mp4', url: d.url });
-          if (links.length > 0) return res.status(200).json({ title: d.title || 'Facebook Video', thumbnail: d.thumbnail || '', uploader: '', medias: links });
-        }
-        errors.push('FB2: ' + (d?.message || r.status));
-      } catch(e) { errors.push('FB2: ' + e.message); }
-
-      return res.status(502).json({ error: 'Facebook download failed. Make sure the video is public. ' + errors.join(' | ') });
+        errors.push(d?.detail || r.status);
+      } catch(e) { errors.push(e.message); }
+      return res.status(502).json({ error: 'Facebook failed: ' + errors.join(' | ') });
     }
-
-    // ── TIKTOK / INSTAGRAM / TWITTER ─────────────────────────
-    // Confirmed: POST /all with form body
-    const body = new URLSearchParams({ url });
-    const r = await fetch('https://all-video-downloader1.p.rapidapi.com/all', {
-      method: 'POST',
-      headers: {
-        'Content-Type':    'application/x-www-form-urlencoded',
-        'x-rapidapi-key':  KEY,
-        'x-rapidapi-host': 'all-video-downloader1.p.rapidapi.com'
-      },
-      body: body.toString()
-    });
-    const d = await r.json();
-    console.log('TikTok/Insta/Twitter:', JSON.stringify(d).slice(0, 400));
-
-    if (!r.ok || d.error) {
-      return res.status(502).json({ error: d?.message || d?.error || 'Could not fetch video. Status: ' + r.status });
-    }
-    if (d.medias || d.links || d.url) return res.status(200).json(d);
-    return res.status(502).json({ error: 'No download links found. Raw: ' + JSON.stringify(d).slice(0, 200) });
 
   } catch(e) {
     console.error('Error:', e.message);
